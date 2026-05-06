@@ -156,6 +156,11 @@ export function registerAllHandlers(): void {
         }
     });
 
+    ipcMain.handle('bill:getByClusterPeriod', async (_, cluster: string, billingDate: string, billingPeriod: string) => {
+        console.log('🔵 bill:getByClusterPeriod called:', { cluster, billingDate, billingPeriod });
+        return await billService.getByClusterPeriod(cluster, billingDate, billingPeriod);
+    });
+    
     ipcMain.handle('bill:getArrears', async (_, customerId) => {
         console.log('🔵 bill:getArrears called, customerId:', customerId);
         try {

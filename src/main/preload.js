@@ -27,7 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         getLastReading: (customerId) => ipcRenderer.invoke('bill:getLastReading', customerId),
         getArrears: (customerId) => ipcRenderer.invoke('bill:getArrears', customerId),
         getBillingPeriod: (date) => ipcRenderer.invoke('bill:getBillingPeriod', date),
-        getDueDate: (billingDate) => ipcRenderer.invoke('bill:getDueDate', billingDate)
+        getDueDate: (billingDate) => ipcRenderer.invoke('bill:getDueDate', billingDate),
+        getByClusterPeriod: (cluster, billingDate, billingPeriod) => ipcRenderer.invoke('bill:getByClusterPeriod', cluster, billingDate, billingPeriod)
     },
 
     payments: {

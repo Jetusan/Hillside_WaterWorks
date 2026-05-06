@@ -60,6 +60,39 @@ export class BillRepository {
         return bill.id ? this.toBill(bill) : null;
     }
 
+    findByClusterPeriod(cluster: string, billingDate: string, billingPeriod: string): Bill[] {
+        const stmt = this.db.prepare(`
+            SELECT 
+                b.*,
+                c.cluster,
+                c.meter_number,
+                c.customer_name
+            FROM bills b
+            JOIN customers c ON b.customer_id = c.id
+            WHERE c.cluster LIKE ? 
+            AND b.billing_date = ? 
+            AND b.billing_period = ?
+            ORDER BY c.customer_name
+        `);
+        
+        const clusterLetter = cluster.charAt(0) + '%';
+        const bills: any[] = [];
+        stmt.bind([clusterLetter, billingDate, billingPeriod]);
+        
+        while (stmt.step()) {
+            const row = stmt.getAsObject() as any;
+            bills.push({
+                ...this.toBill(row),
+                cluster: row.cluster,
+                meter_number: row.meter_number,
+                customer_name: row.customer_name
+            });
+        }
+        stmt.free();
+        
+        return bills;
+    }
+
     findByCustomerId(customerId: number): Bill[] {
         const stmt = this.db.prepare(`
             SELECT * FROM bills 

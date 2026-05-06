@@ -37,6 +37,11 @@ export class BillService {
         }
     }
     
+    async getByClusterPeriod(cluster: string, billingDate: string, billingPeriod: string) {
+        const billRepo = getBillRepository();
+        return billRepo.findByClusterPeriod(cluster, billingDate, billingPeriod);
+    }
+
     async calculatePreview(previousReading: number, currentReading: number, discount: number = 0, penalty: number = 0) {
         return calculateBill(previousReading, currentReading, discount, penalty, 0);
     }

@@ -61,6 +61,7 @@ interface BatchDetail {
 
 const Billing: React.FC = () => {
     // Main states
+    const [batchLimit, setBatchLimit] = useState(10);
     const [customers, setCustomers] = useState<Customer[]>([]);
     const [allBills, setAllBills] = useState<Bill[]>([]);
     const [loading, setLoading] = useState(false);
@@ -428,6 +429,17 @@ const Billing: React.FC = () => {
                                                                 <IoMdPrint />
                                                             </button>
                                                         </div>
+                                                        {/* Add this after the batch table */}
+                                                        {batchLimit < clusterBatches.length && (
+                                                            <div style={{ textAlign: 'center', marginTop: '16px' }}>
+                                                                <button 
+                                                                    className="btn-view-all"
+                                                                    onClick={() => setBatchLimit(prev => prev + 10)}
+                                                                >
+                                                                    Load More Batches ({clusterBatches.length - batchLimit} remaining)
+                                                                </button>
+                                                            </div>
+                                                        )}
                                                     </td>
                                                 </tr>
                                             ))}

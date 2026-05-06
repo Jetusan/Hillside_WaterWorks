@@ -7,7 +7,7 @@ interface Customer {
     id: number;
     cluster: string;
     meter_number: string;
-    customer_name: string; 
+    customer_name: string;
 }
 
 interface ClusterCustomer {
@@ -45,100 +45,158 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
 }) => {
     const [selectedCluster, setSelectedCluster] = useState('');
     const [clusterCustomers, setClusterCustomers] = useState<ClusterCustomer[]>([]);
-    const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({});
-    const [selectAll, setSelectAll] = useState(false);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-    
-    // Date controls - initialize with today's date
+
+    // Date controls
     const today = new Date().toISOString().split('T')[0];
     const [billingDate, setBillingDate] = useState(today);
     const [dueDate, setDueDate] = useState(today);
     const [billingPeriod, setBillingPeriod] = useState('Monthly');
-    
+
     // Table state
     const [sorting, setSorting] = useState<SortingState>([]);
     const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
     const [globalFilter, setGlobalFilter] = useState('');
-    const inputRefs = useRef<Record<string, HTMLInputElement>>({});
+
+    // Refs for tracking calculations (FIX 1 & 2)
+    const clusterCustomersRef = useRef<ClusterCustomer[]>([]);
+    const pendingCalculationRef = useRef<Set<string>>(new Set());
+    const calculationInProgressRef = useRef(false);
+
+    // Keep ref in sync with state
+    useEffect(() => {
+        clusterCustomersRef.current = clusterCustomers;
+    }, [clusterCustomers]);
+
+    // Auto-recalculate when rows are marked as pending (FIX 1)
+    useEffect(() => {
+        const processPendingCalculations = async () => {
+            if (calculationInProgressRef.current) return;
+
+            const pendingIds = Array.from(pendingCalculationRef.current);
+            if (pendingIds.length === 0) return;
+
+            calculationInProgressRef.current = true;
+
+            for (const rowId of pendingIds) {
+                const row = clusterCustomersRef.current.find(c => c.id === rowId);
+                if (!row) continue;
+
+                const prevReading = row.previous_reading || 0;
+                const currentReading = parseFloat(row.current_reading?.toString() || '0');
+                const discount = parseFloat(row.discount?.toString() || '0');
+                const penalty = parseFloat(row.penalty?.toString() || '0');
+                const arrears = row.arrears || 0;
+
+                if (!row.current_reading || currentReading <= prevReading) {
+                    setClusterCustomers(prev =>
+                        prev.map(c =>
+                            c.id === rowId
+                                ? { ...c, usage: 0, grossAmount: 0, netAmount: 0, totalDue: 0, isCalculated: true }
+                                : c
+                        )
+                    );
+                    pendingCalculationRef.current.delete(rowId);
+                    continue;
+                }
+
+                try {
+                    const result = await window.electronAPI.bills.calculate(
+                        prevReading,
+                        currentReading,
+                        discount,
+                        penalty
+                    );
+
+                    const totalDue = result.totalDue + arrears;
+
+                    setClusterCustomers(prev =>
+                        prev.map(c =>
+                            c.id === rowId
+                                ? {
+                                    ...c,
+                                    usage: result.usage,
+                                    grossAmount: result.grossAmount,
+                                    netAmount: result.netAmount,
+                                    totalDue: totalDue,
+                                    isCalculated: true,
+                                }
+                                : c
+                        )
+                    );
+                } catch (error) {
+                    console.error('Error auto-calculating bill:', error);
+                }
+
+                pendingCalculationRef.current.delete(rowId);
+            }
+
+            calculationInProgressRef.current = false;
+        };
+
+        const timeoutId = setTimeout(processPendingCalculations, 500);
+        return () => clearTimeout(timeoutId);
+    }, [clusterCustomers.length]);
 
     const handleClusterSelect = async (clusterLetter: string) => {
-    setSelectedCluster(clusterLetter);
-    setClusterCustomers([]);
-    setSelectedRows({});
-    setSelectAll(false);
+        setSelectedCluster(clusterLetter);
+        setClusterCustomers([]);
+        pendingCalculationRef.current.clear();
 
-    if (!clusterLetter) return;
+        if (!clusterLetter) return;
 
-    const filtered = customers.filter(c => c.cluster.charAt(0) === clusterLetter);
-    console.log(' Selected cluster:', clusterLetter);
-    console.log(' Filtered customers:', filtered);
-    
-    const entries = await Promise.all(
-        filtered.map(async (customer) => {
-            try {
-                // STEP 1: Check if we're calling the API
-                console.log(` Calling getLastReading for customer ${customer.id} (${customer.customer_name})`);
-                
-                const lastReading = await window.electronAPI.bills.getLastReading(customer.id);
-                console.log(` getLastReading returned:`, lastReading, `(type: ${typeof lastReading})`);
-                
-                const arrears = await window.electronAPI.bills.getArrears(customer.id);
-                console.log(` getArrears returned:`, arrears);
-                
-                return {
-                    id: customer.id.toString(),
-                    customer_id: customer.id,
-                    customer_name: customer.customer_name,
-                    meter_number: customer.meter_number,
-                    previous_reading: lastReading,
-                    current_reading: '',
-                    usage: 0,
-                    discount: '0',
-                    penalty: '0',
-                    arrears: arrears,
-                    grossAmount: 0,
-                    netAmount: 0,
-                    totalDue: 0,
-                    isCalculated: false,
-                    cluster: customer.cluster,
-                };
-            } catch (error) {
-                console.error(` Error loading data for customer ${customer.id}:`, error);
-                return null;
-            }
-        })
-    );
-    
-    console.log(' Final cluster customers:', entries);
-    setClusterCustomers(entries.filter(Boolean));
-};
+        const filtered = customers.filter(c => c.cluster.charAt(0) === clusterLetter);
 
+        const entries = await Promise.all(
+            filtered.map(async (customer) => {
+                try {
+                    const lastReading = await window.electronAPI.bills.getLastReading(customer.id);
+                    const arrears = await window.electronAPI.bills.getArrears(customer.id);
+
+                    return {
+                        id: customer.id.toString(),
+                        customer_id: customer.id,
+                        customer_name: customer.customer_name,
+                        meter_number: customer.meter_number,
+                        previous_reading: lastReading,
+                        current_reading: '',
+                        usage: 0,
+                        discount: '0',
+                        penalty: '0',
+                        arrears: arrears,
+                        grossAmount: 0,
+                        netAmount: 0,
+                        totalDue: 0,
+                        isCalculated: false,
+                        cluster: customer.cluster,
+                    };
+                } catch (error) {
+                    console.error(`Error loading data for customer ${customer.id}:`, error);
+                    return null;
+                }
+            })
+        );
+
+        setClusterCustomers(entries.filter(Boolean) as ClusterCustomer[]);
+    };
+
+    // FIX 2: calculateBillForRow using ref instead of stale state
     const calculateBillForRow = useCallback(async (
-        rowId: string, 
-        currentReading?: string, 
-        discount?: string, 
+        rowId: string,
+        currentReading?: string,
+        discount?: string,
         penalty?: string
     ) => {
-        // Get the latest row data from state
-        let row: ClusterCustomer | undefined;
-        
-        // Use functional update to read state without modifying it
-        setClusterCustomers(prev => {
-            row = prev.find(c => c.id === rowId);
-            return prev; // Don't modify state here, just read it
-        });
-        
-        // Wait for state to be read (React batches state updates)
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        // If parameters are provided, use them; otherwise use the row values
-        const finalCurrentReading = currentReading || row?.current_reading?.toString() || '0';
-        const finalDiscount = discount || row?.discount?.toString() || '0';
-        const finalPenalty = penalty || row?.penalty?.toString() || '0';
-        const finalArrears = row?.arrears || 0;
-        const finalPrevReading = row?.previous_reading || 0;
-        
+        const row = clusterCustomersRef.current.find(c => c.id === rowId);
+        if (!row) return;
+
+        const finalCurrentReading = currentReading || row.current_reading?.toString() || '0';
+        const finalDiscount = discount || row.discount?.toString() || '0';
+        const finalPenalty = penalty || row.penalty?.toString() || '0';
+        const finalArrears = row.arrears || 0;
+        const finalPrevReading = row.previous_reading || 0;
+
         if (!finalCurrentReading || parseFloat(finalCurrentReading) <= finalPrevReading) {
             setMessage({ type: 'error', text: 'Current reading must be greater than previous reading' });
             return;
@@ -172,70 +230,9 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             console.error('Error calculating bill:', error);
             setMessage({ type: 'error', text: 'Failed to calculate bill' });
         }
-    }, []); // Empty dependency array
+    }, []);
 
-    // Auto-recalculate when any row has isCalculated: false and valid readings
-    useEffect(() => {
-        const calculatePendingRows = async () => {
-            for (const customer of clusterCustomers) {
-                if (!customer.isCalculated) {
-                    const prevReading = customer.previous_reading || 0;
-                    const currentReading = parseFloat(customer.current_reading?.toString() || '0');
-                    const discount = parseFloat(customer.discount?.toString() || '0');
-                    const penalty = parseFloat(customer.penalty?.toString() || '0');
-                    const arrears = customer.arrears || 0;
-
-                    // If current reading is empty or invalid, reset totals to zero
-                    if (!customer.current_reading || currentReading <= prevReading) {
-                        if (customer.usage !== 0 || customer.grossAmount !== 0) {
-                            setClusterCustomers(prev =>
-                                prev.map(c =>
-                                    c.id === customer.id
-                                        ? { ...c, usage: 0, grossAmount: 0, netAmount: 0, totalDue: 0 }
-                                        : c
-                                )
-                            );
-                        }
-                        continue;
-                    }
-
-                    // Calculate with latest values
-                    try {
-                        const result = await window.electronAPI.bills.calculate(
-                            prevReading,
-                            currentReading,
-                            discount,
-                            penalty
-                        );
-
-                        const totalDue = result.totalDue + arrears;
-
-                        setClusterCustomers(prev =>
-                            prev.map(c =>
-                                c.id === customer.id
-                                    ? {
-                                        ...c,
-                                        usage: result.usage,
-                                        grossAmount: result.grossAmount,
-                                        netAmount: result.netAmount,
-                                        totalDue: totalDue,
-                                        isCalculated: true,
-                                    }
-                                    : c
-                            )
-                        );
-                    } catch (error) {
-                        console.error('Error auto-calculating bill:', error);
-                    }
-                }
-            }
-        };
-
-        // Debounce the calculation to avoid rapid re-calculations while typing
-        const timeoutId = setTimeout(calculatePendingRows, 300);
-        return () => clearTimeout(timeoutId);
-    }, [clusterCustomers]);
-
+    // FIX 3: saveAllBills with duplicate check and confirmation
     const saveAllBills = async () => {
         const billsToSave = clusterCustomers.filter(c => c.isCalculated);
 
@@ -244,7 +241,6 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             return;
         }
 
-        // Validate dates
         if (!billingDate) {
             setMessage({ type: 'error', text: 'Please select a billing date' });
             return;
@@ -254,8 +250,38 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             return;
         }
 
+        // Check for existing bills in this cluster + period
+        try {
+            const existingBills = await window.electronAPI.bills.getByClusterPeriod(
+                selectedCluster,
+                billingDate,
+                billingPeriod
+            );
+
+            if (existingBills && existingBills.length > 0) {
+                const confirmed = window.confirm(
+                    `⚠️ ${existingBills.length} bill(s) already exist for Cluster ${selectedCluster} in ${billingPeriod} period (${billingDate}).\n\n` +
+                    `Do you want to proceed and create ${billsToSave.length} new bill(s)?\n\n` +
+                    `This may result in duplicate bills.`
+                );
+                if (!confirmed) return;
+            } else {
+                const confirmed = window.confirm(
+                    `Are you sure you want to save ${billsToSave.length} bill(s) for Cluster ${selectedCluster}?\n\n` +
+                    `Billing Date: ${billingDate}\nDue Date: ${dueDate}\nPeriod: ${billingPeriod}`
+                );
+                if (!confirmed) return;
+            }
+        } catch (error) {
+            // If the API doesn't exist yet, show a simple confirm
+            const confirmed = window.confirm(
+                `Save ${billsToSave.length} bill(s) for Cluster ${selectedCluster}?`
+            );
+            if (!confirmed) return;
+        }
+
         setLoading(true);
-        
+
         let successCount = 0;
         let errorCount = 0;
 
@@ -300,31 +326,12 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
 
     const formatCurrency = (amount: number) => `₱ ${amount.toFixed(2)}`;
 
-    const handleSelectAll = (checked: boolean) => {
-        setSelectAll(checked);
-        const newSelected: Record<string, boolean> = {};
-        clusterCustomers.forEach(customer => {
-            newSelected[customer.id] = checked;
-        });
-        setSelectedRows(newSelected);
-    };
-
-    const handleRowSelect = (rowId: string, checked: boolean) => {
-        setSelectedRows(prev => {
-            const newSelected = { ...prev, [rowId]: checked };
-            const allSelected = clusterCustomers.every(c => newSelected[c.id]);
-            setSelectAll(allSelected);
-            return newSelected;
-        });
-    };
-
     const columnHelper = createColumnHelper<ClusterCustomer>();
-    
-    // FIX: Empty dependency array to prevent recreating columns on every render
+
     const columns = useMemo(() => [
         columnHelper.accessor('cluster', {
             header: 'Cluster',
-            size: 80,  // Fixed width
+            size: 80,
             minSize: 60,
         }),
         columnHelper.accessor('customer_name', {
@@ -332,19 +339,19 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             size: 180,
             minSize: 120,
         }),
-        columnHelper.accessor('meter_number', { 
+        columnHelper.accessor('meter_number', {
             header: 'Meter Number',
             size: 180,
             minSize: 100,
         }),
-        columnHelper.accessor('previous_reading', { 
+        columnHelper.accessor('previous_reading', {
             header: 'Previous Reading',
             size: 100,
             minSize: 110,
             cell: info => {
                 const rowId = info.row.original.id;
                 const value = info.getValue();
-                
+
                 return (
                     <input
                         type="number"
@@ -352,7 +359,6 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                         value={value || ''}
                         onChange={(e) => {
                             const newValue = parseFloat(e.target.value) || 0;
-                            
                             setClusterCustomers(prev =>
                                 prev.map(customer =>
                                     customer.id === rowId
@@ -360,6 +366,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                                         : customer
                                 )
                             );
+                            pendingCalculationRef.current.add(rowId);
                         }}
                         placeholder="0"
                         onClick={(e) => e.stopPropagation()}
@@ -375,8 +382,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             minSize: 110,
             cell: info => {
                 const rowId = info.row.original.id;
-                const prevReading = info.row.original.previous_reading;
-                
+
                 return (
                     <input
                         type="number"
@@ -384,7 +390,6 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                         value={info.getValue() || ''}
                         onChange={(e) => {
                             const newValue = e.target.value;
-                            
                             setClusterCustomers(prev =>
                                 prev.map(customer =>
                                     customer.id === rowId
@@ -392,6 +397,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                                         : customer
                                 )
                             );
+                            pendingCalculationRef.current.add(rowId);
                         }}
                         placeholder="0"
                         onClick={(e) => e.stopPropagation()}
@@ -405,7 +411,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             minSize: 110,
             cell: info => {
                 const rowId = info.row.original.id;
-                
+
                 return (
                     <input
                         type="number"
@@ -413,7 +419,6 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                         value={info.getValue() || ''}
                         onChange={(e) => {
                             const newValue = e.target.value;
-                            
                             setClusterCustomers(prev =>
                                 prev.map(customer =>
                                     customer.id === rowId
@@ -421,6 +426,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                                         : customer
                                 )
                             );
+                            pendingCalculationRef.current.add(rowId);
                         }}
                         placeholder="0"
                         onClick={(e) => e.stopPropagation()}
@@ -434,7 +440,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
             minSize: 90,
             cell: info => {
                 const rowId = info.row.original.id;
-                
+
                 return (
                     <input
                         type="number"
@@ -442,7 +448,6 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                         value={info.getValue() || ''}
                         onChange={(e) => {
                             const newValue = e.target.value;
-                            
                             setClusterCustomers(prev =>
                                 prev.map(customer =>
                                     customer.id === rowId
@@ -450,6 +455,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                                         : customer
                                 )
                             );
+                            pendingCalculationRef.current.add(rowId);
                         }}
                         placeholder="0"
                         onClick={(e) => e.stopPropagation()}
@@ -478,7 +484,6 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
         }),
     ], []);
 
-    // Update the table configuration to use column sizing
     const table = useReactTable({
         data: clusterCustomers,
         columns,
@@ -490,40 +495,43 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
         getSortedRowModel: getSortedRowModel(),
         getFilteredRowModel: getFilteredRowModel(),
         getPaginationRowModel: getPaginationRowModel(),
-        enableColumnResizing: true,  // Enable column resizing
-        columnResizeMode: 'onChange',  // Resize as user drags
+        enableColumnResizing: true,
+        columnResizeMode: 'onChange',
     });
 
     if (!isOpen) return null;
 
     return (
-        // FIX: Better overlay click handling
-        <div 
-            className="modal-overlay" 
+        <div
+            className="modal-overlay"
             onClick={(e) => {
-                // Only close if clicking the overlay itself
                 if (e.target === e.currentTarget) {
                     onClose();
                 }
             }}
         >
             <div className="modal-container modal-container-wide" onClick={(e) => e.stopPropagation()}>
-                {/* Modal Header with Title and Close Button */}
                 <div className="modal-header">
                     <div className="modal-header-left">
                         <h2 className="modal-title">Generate Bills</h2>
                     </div>
-                    <button 
-                        className="modal-close-btn" 
+                    <button
+                        className="modal-close-btn"
                         onClick={onClose}
                         title="Close"
                     >
                         <MdClose />
                     </button>
                 </div>
-                
+
                 <div className="modal-body">
-                    {/* Date and Cluster Selection Row */}
+                    {message && (
+                        <div className={`message-toast ${message.type}`}>
+                            <span>{message.text}</span>
+                            <button onClick={() => setMessage(null)}>×</button>
+                        </div>
+                    )}
+
                     <div className="modal-controls-row">
                         <div className="modal-control-group">
                             <label className="modal-label">Billing Date</label>
@@ -558,7 +566,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                         </div>
                         <div className="modal-control-group modal-control-group-cluster">
                             <label className="modal-label">Select Cluster</label>
-                            <select 
+                            <select
                                 className="modal-select"
                                 onChange={(e) => handleClusterSelect(e.target.value)}
                                 value={selectedCluster}
@@ -573,10 +581,8 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                         </div>
                     </div>
 
-                    {/* Table - Only shows when cluster is selected */}
                     {selectedCluster && clusterCustomers.length > 0 && (
                         <>
-
                             <div className="table-container" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                                 <div className="table-toolbar">
                                     <input
@@ -615,7 +621,7 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                                         </tbody>
                                     </table>
                                 </div>
-                                
+
                                 <div className="pagination-container">
                                     <div className="pagination-info">
                                         Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
@@ -650,22 +656,20 @@ const GenerateBillModal: React.FC<GenerateBillModalProps> = ({
                                             »»
                                         </button>
                                     </div>
-                                </div>               
-
-                            </div>
-                                <div className="modal-actions-buttons">
-                                    <button
-                                        className="btn-save-bulk"
-                                        onClick={saveAllBills}
-                                        disabled={loading}
-                                    >
-                                        <MdSaveAlt />{loading ? 'Saving...' : 'Save All Bills'}
-                                    </button>
                                 </div>
+                            </div>
+                            <div className="modal-actions-buttons">
+                                <button
+                                    className="btn-save-bulk"
+                                    onClick={saveAllBills}
+                                    disabled={loading}
+                                >
+                                    <MdSaveAlt />{loading ? 'Saving...' : 'Save All Bills'}
+                                </button>
+                            </div>
                         </>
                     )}
 
-                    {/* Empty state when no cluster selected or no customers */}
                     {!selectedCluster && (
                         <div className="empty-state">
                             <span className="empty-icon"><FaUsersViewfinder /></span>

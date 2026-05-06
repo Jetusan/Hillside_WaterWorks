@@ -32,6 +32,7 @@ declare global {
                 getArrears: (customerId: number) => Promise<number>;
                 getBillingPeriod: (date: string) => Promise<string>;
                 getDueDate: (billingDate: string) => Promise<string>;
+                getByClusterPeriod: (cluster: string, billingDate: string, billingPeriod: string) => Promise<any[]>;
             }
 
             payments: {
